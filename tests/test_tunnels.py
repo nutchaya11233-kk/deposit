@@ -33,12 +33,12 @@ def login_content(db, user):
     return {"user": user, "metas": {"token": tunnels.get_token(db, user)}}
 
 
-def proxy_content(db, user, name, kind="stcp", **extra):
+def proxy_content(db, user, name, remote_port, kind="tcp"):
     return {
         "user": {"user": user, "metas": {"token": tunnels.get_token(db, user)}},
         "proxy_name": f"{user}.{name}",
         "proxy_type": kind,
-        **extra,
+        "remote_port": remote_port,
     }
 
 
@@ -108,31 +108,37 @@ def test_plugin_login(db):
 
 def test_plugin_new_proxy(db):
     tunnels.create(db, "alice", {"name": "d1"})
-    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "alice", "d1")) == frp_plugin.ALLOW
-    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "alice", "nope"))["reject"]
+    port = db["tunnels"].find_one({"name": "d1"})["remote_port"]
+    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "alice", "d1", port)) == frp_plugin.ALLOW
+    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "alice", "nope", port))["reject"]
     # ยูสอื่นเปิดชื่อเดียวกันไม่ได้ถ้ายังไม่ได้สร้างเอง
-    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "bob.x", "d1"))["reject"]
-    # เปิด private ให้กลายเป็นพอร์ต public ไม่ได้
-    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "alice", "d1", "tcp", remote_port=20000))["reject"]
+    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "bob.x", "d1", port))["reject"]
+    # ขอพอร์ตอื่นหรือชนิดอื่นที่ไม่ได้แจกไว้ไม่ได้
+    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "alice", "d1", port + 1))["reject"]
+    assert frp_plugin.handle(db, "NewProxy", proxy_content(db, "alice", "d1", port, "stcp"))["reject"]
     # ชื่อ proxy ที่ไม่ขึ้นต้นด้วยยูสตัวเอง
-    content = proxy_content(db, "bob.x", "d1")
+    content = proxy_content(db, "bob.x", "d1", port)
     content["proxy_name"] = "alice.d1"
     assert frp_plugin.handle(db, "NewProxy", content)["reject"]
 
 
-def test_plugin_public_port_must_match(db, monkeypatch):
-    monkeypatch.setattr(tunnels, "TUNNEL_PUBLIC_ENABLED", True)
-    tunnels.create(db, "alice", {"name": "pub", "mode": "public"})
-    port = db["tunnels"].find_one({"name": "pub"})["remote_port"]
-    ok = proxy_content(db, "alice", "pub", "tcp", remote_port=port)
-    assert frp_plugin.handle(db, "NewProxy", ok) == frp_plugin.ALLOW
-    bad = proxy_content(db, "alice", "pub", "tcp", remote_port=port + 1)
-    assert frp_plugin.handle(db, "NewProxy", bad)["reject"]
+def test_ports_are_unique_across_users(db):
+    tunnels.create(db, "alice", {"name": "d1"})
+    tunnels.create(db, "bob.x", {"name": "d1"})
+    ports = [d["remote_port"] for d in db["tunnels"].find()]
+    assert len(set(ports)) == 2
 
 
-def test_public_mode_is_off_by_default(db):
-    with pytest.raises(tunnels.TunnelError):
-        tunnels.create(db, "alice", {"name": "pub", "mode": "public"})
+def test_migrates_old_private_tunnels(db):
+    db["tunnels"].insert_one({
+        "owner": "alice", "name": "old", "mode": "private", "local_ip": "127.0.0.1",
+        "local_port": 5555, "secret_key": "x", "visitor_port": 15555,
+    })
+    assert tunnels.migrate_private(db) == 1
+    doc = db["tunnels"].find_one({"name": "old"})
+    assert doc["remote_port"] == tunnels.TUNNEL_PORT_MIN
+    assert "secret_key" not in doc and "mode" not in doc
+    assert tunnels.migrate_private(db) == 0
 
 
 def test_plugin_route_needs_secret_and_fails_closed(client, db):
@@ -162,34 +168,23 @@ def test_generated_config(db, monkeypatch):
     monkeypatch.setattr(tunnels, "TUNNEL_TRANSPORT", "wss")
     monkeypatch.setattr(tunnels, "TUNNEL_SERVER_HOST", "frp.example.com")
     monkeypatch.setattr(tunnels, "TUNNEL_SERVER_PORT", 443)
+    monkeypatch.setattr(tunnels, "TUNNEL_PUBLIC_HOST", "tcp.example.com")
     tid = tunnels.create(db, "alice", {"name": "d1"})
     doc = tunnels.get(db, "alice", tid)
 
     frpc = tunnels.frpc_toml(db, doc)
     assert 'transport.protocol = "wss"' in frpc
     assert 'user = "alice"' in frpc
-    assert 'type = "stcp"' in frpc
-    assert "remotePort" not in frpc
-    assert doc["secret_key"] in frpc
+    assert 'type = "tcp"' in frpc
+    assert f"remotePort = {doc['remote_port']}" in frpc
+    assert tunnels.serialize(doc)["endpoint"] == f"tcp.example.com:{doc['remote_port']}"
+    assert tunnels.setup(db, "alice", tid)["connect"] == f"adb connect tcp.example.com:{doc['remote_port']}"
 
-    visitor = tunnels.visitor_toml(db, doc)
-    assert 'serverName = "d1"' in visitor
-    assert "bindPort = 15555" in visitor
-    assert tunnels.serialize(doc)["endpoint"] == "127.0.0.1:15555"
-
-    frps = tunnels.render_frps_toml(db)
-    assert 'bindAddr = "127.0.0.1"' in frps
-    assert f'/internal/frp/{tunnels.plugin_secret(db)}' in frps
-    assert 'ops = ["Login", "NewProxy"]' in frps
-
-
-def test_public_ports_bind_outside_only_when_enabled(db, monkeypatch):
-    monkeypatch.setattr(tunnels, "TUNNEL_TRANSPORT", "wss")
-    assert "proxyBindAddr" not in tunnels.render_frps_toml(db)
-    monkeypatch.setattr(tunnels, "TUNNEL_PUBLIC_ENABLED", True)
     frps = tunnels.render_frps_toml(db)
     assert 'bindAddr = "127.0.0.1"' in frps
     assert 'proxyBindAddr = "0.0.0.0"' in frps
+    assert f'/internal/frp/{tunnels.plugin_secret(db)}' in frps
+    assert 'ops = ["Login", "NewProxy"]' in frps
 
 
 def test_bootstrap_admin_only_when_empty(db):

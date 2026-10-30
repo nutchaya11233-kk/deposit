@@ -55,11 +55,7 @@ def _check_proxy(db, content: dict) -> dict:
     if not doc:
         return _reject("unknown tunnel")
 
-    kind = content.get("proxy_type")
-    if doc.get("mode") == "public":
-        if kind != "tcp" or content.get("remote_port") != doc.get("remote_port"):
-            return _reject("tunnel config mismatch")
-    elif kind != "stcp":
+    if content.get("proxy_type") != "tcp" or content.get("remote_port") != doc.get("remote_port"):
         return _reject("tunnel config mismatch")
     return ALLOW
 

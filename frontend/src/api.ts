@@ -97,13 +97,10 @@ export interface ManagedUser {
 /* ── Tunnel ─────────────────────────────────────────────── */
 
 export type TunnelStatus = 'online' | 'offline' | 'unknown'
-/** private = เข้าผ่าน visitor บนคอม ไม่เปิดพอร์ต · public = เปิดพอร์ตบน VPS */
-export type TunnelMode = 'private' | 'public'
 
 export interface Tunnel {
   id: string
   name: string
-  mode: TunnelMode
   localIp: string
   localPort: number
   /** ที่อยู่สำหรับ adb connect */
@@ -118,7 +115,6 @@ export interface TunnelList {
   /** wss = ผ่าน Cloudflare · tcp = ต่อตรงเข้า VPS */
   transport: 'wss' | 'tcp'
   frpVersion: string
-  publicEnabled: boolean
   maxPerUser: number
   /** โชว์ online/offline ได้ไหม — ได้ก็ต่อเมื่อตั้ง frps dashboard ไว้ */
   statusAvailable: boolean
@@ -134,8 +130,8 @@ export interface TunnelSetup {
   summary: Tunnel
   /** แบบทีละสเต็ป — แต่ละสเต็ปรอจบก่อนทำตัวถัดไป (กัน paste โดนตัด) */
   termuxSteps: TunnelStep[]
-  /** ฝั่งคอม — null เมื่อเป็นโหมด public */
-  pc: { download: string; run: string; connect: string } | null
+  /** คำสั่งต่อ ADB จากคอม */
+  connect: string
   /** ทำยังไงหลังมือถือรีบูต — pc = เปิด ADB TCP ใหม่, phone = ปลุก frpc */
   reboot: { pc: string; phone: string }
 }
@@ -149,10 +145,6 @@ export interface RotateResult {
 /** ที่อยู่ไฟล์ frpc.toml สำหรับโหลด — ไม่มี id = รวมทุก tunnel ของตัวเอง */
 export const frpcUrl = (id?: string) =>
   id ? `/api/tunnels/${id}/frpc.toml` : '/api/tunnels/frpc.toml'
-
-/** ที่อยู่ไฟล์ visitor สำหรับคอม — ไม่มี id = รวมทุก tunnel แบบ private */
-export const visitorUrl = (id?: string) =>
-  id ? `/api/tunnels/${id}/frpc-visitor.toml` : '/api/tunnels/frpc-visitor.toml'
 
 /* ── เส้นทางที่เรียกได้ ─────────────────────────────────── */
 
@@ -179,7 +171,7 @@ export const api = {
 
   /* Tunnel ของตัวเอง */
   tunnels: () => get<TunnelList>('/tunnels'),
-  createTunnel: (data: { name: string; mode: TunnelMode; localIp: string; localPort: number }) =>
+  createTunnel: (data: { name: string; localIp: string; localPort: number }) =>
     post<{ id: string }>('/tunnels', data),
   deleteTunnel: (id: string) => del<{ ok: true; reloaded: boolean }>(`/tunnels/${id}`),
   tunnelToken: () => get<{ token: string }>('/tunnels/token'),

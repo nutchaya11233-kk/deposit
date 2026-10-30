@@ -10,10 +10,8 @@ import {
   api,
   ApiError,
   frpcUrl,
-  visitorUrl,
   type Tunnel,
   type TunnelList,
-  type TunnelMode,
   type TunnelSetup,
 } from '../api'
 import { Confirm, Empty, Field, Modal, useToast } from '../ui'
@@ -25,7 +23,7 @@ const STATUS_LOOK: Record<Tunnel['status'], { label: string; tone: string; live?
 }
 
 const POLL_MS = 10000
-const EMPTY_DRAFT = { name: '', mode: 'private' as TunnelMode, localIp: '127.0.0.1', localPort: '5555' }
+const EMPTY_DRAFT = { name: '', localIp: '127.0.0.1', localPort: '5555' }
 
 /* ── ปุ่มคัดลอก ─────────────────────────────────────────── */
 
@@ -88,9 +86,7 @@ function SetupModal({ tunnelId, onClose }: { tunnelId: string; onClose: () => vo
             <span>ℹ️</span>
             <span>
               <strong>{data.summary.name}</strong>
-              {data.pc
-                ? <>ตั้งค่าบนมือถือก่อน แล้วรัน visitor บนคอม จะเข้ามือถือได้ที่ <code>{data.summary.endpoint}</code></>
-                : <>หลังตั้งค่าบนมือถือ เข้าได้ที่ <code>{data.summary.endpoint}</code></>}
+              หลังตั้งค่าบนมือถือ เข้าได้ที่ <code>{data.summary.endpoint}</code>
             </span>
           </div>
 
@@ -108,23 +104,13 @@ function SetupModal({ tunnelId, onClose }: { tunnelId: string; onClose: () => vo
             ))}
           </div>
 
-          {data.pc && (
-            <div className="stack" style={{ gap: 10 }}>
-              <strong style={{ fontSize: 14 }}>ฝั่งคอม (visitor)</strong>
-              <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>
-                1) โหลด frp สำหรับ Windows แล้วแตกไฟล์:{' '}
-                <a href={data.pc.download} target="_blank" rel="noreferrer">frp ({data.pc.download.split('/').pop()})</a>
-              </p>
-              <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>
-                2) โหลด{' '}
-                <a href={visitorUrl(data.summary.id)} download>frpc-visitor.toml</a>{' '}
-                ไปวางข้าง <code>frpc.exe</code> แล้วรัน (เปิดหน้าต่างนี้ทิ้งไว้):
-              </p>
-              <CodeBlock text={data.pc.run} />
-              <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>3) เปิดอีกหน้าต่างแล้วต่อ ADB:</p>
-              <CodeBlock text={data.pc.connect} />
-            </div>
-          )}
+          <div className="stack" style={{ gap: 10 }}>
+            <strong style={{ fontSize: 14 }}>ฝั่งคอม</strong>
+            <p className="muted" style={{ fontSize: 12.5, margin: 0 }}>
+              รอสถานะขึ้นออนไลน์ แล้วต่อ ADB:
+            </p>
+            <CodeBlock text={data.connect} />
+          </div>
 
           <div>
             <strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
@@ -175,7 +161,6 @@ export default function TunnelsPage({ onGuide }: { onGuide: () => void }) {
     try {
       const { id } = await api.createTunnel({
         name: draft.name.trim(),
-        mode: draft.mode,
         localIp: draft.localIp.trim() || '127.0.0.1',
         localPort: Number(draft.localPort) || 5555,
       })
@@ -239,8 +224,6 @@ export default function TunnelsPage({ onGuide }: { onGuide: () => void }) {
     )
   }
 
-  const hasPrivate = info.tunnels.some((t) => t.mode === 'private')
-
   return (
     <div className="stack">
       {!info.serverHost && (
@@ -271,22 +254,6 @@ export default function TunnelsPage({ onGuide }: { onGuide: () => void }) {
                 onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
               />
             </Field>
-            {info.publicEnabled && (
-              <Field
-                label="โหมด"
-                note={draft.mode === 'public'
-                  ? '⚠️ เปิดพอร์ต ADB ออกเน็ต และเปิดเผย IP ของเซิร์ฟเวอร์'
-                  : 'แนะนำ — ไม่เปิดพอร์ต เข้าได้เฉพาะคอมที่มี visitor ของคุณ'}
-              >
-                <select
-                  value={draft.mode}
-                  onChange={(e) => setDraft((d) => ({ ...d, mode: e.target.value as TunnelMode }))}
-                >
-                  <option value="private">Private (ซ่อน)</option>
-                  <option value="public">Public (host:port)</option>
-                </select>
-              </Field>
-            )}
             <Field label="Local IP" note="ที่อยู่ของ ADB ในตัวมือถือเอง">
               <input
                 className="mono"
@@ -317,11 +284,6 @@ export default function TunnelsPage({ onGuide }: { onGuide: () => void }) {
         <header>
           <h2>Tunnel ของฉัน</h2>
           <div style={{ flex: 1 }} />
-          {hasPrivate && (
-            <a className="btn ghost sm" href={visitorUrl()} download>
-              ⤓ visitor (รวมทุกอัน)
-            </a>
-          )}
           {info.tunnels.length > 0 && (
             <a className="btn ghost sm" href={frpcUrl()} download>
               ⤓ frpc.toml (รวมทุกอัน)
@@ -348,10 +310,7 @@ export default function TunnelsPage({ onGuide }: { onGuide: () => void }) {
                     const look = STATUS_LOOK[t.status]
                     return (
                       <tr key={t.id}>
-                        <td>
-                          <strong>{t.name}</strong>
-                          <div className="sub">{t.mode === 'private' ? 'Private' : 'Public'}</div>
-                        </td>
+                        <td><strong>{t.name}</strong></td>
                         <td>
                           <div className="copyline">
                             <code>{t.endpoint}</code>

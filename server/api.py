@@ -14,7 +14,6 @@ from server.auth import admin_required, current_user, login_required, verify
 from server.config import (
     TUNNEL_FRP_VERSION,
     TUNNEL_MAX_PER_USER,
-    TUNNEL_PUBLIC_ENABLED,
     TUNNEL_SERVER_HOST,
     TUNNEL_SERVER_PORT,
     TUNNEL_TRANSPORT,
@@ -213,7 +212,6 @@ def list_tunnels():
         "serverPort":      TUNNEL_SERVER_PORT,
         "transport":       TUNNEL_TRANSPORT,
         "frpVersion":      TUNNEL_FRP_VERSION,
-        "publicEnabled":   TUNNEL_PUBLIC_ENABLED,
         "maxPerUser":      TUNNEL_MAX_PER_USER,
         "statusAvailable": tunnels.status_available(),
         "tunnels":         tunnels.listing(get_db(), session["username"]),
@@ -253,26 +251,11 @@ def download_all_frpc():
     return _download(tunnels.frpc_toml_all(get_db(), session["username"]), "frpc.toml")
 
 
-@bp.get("/tunnels/frpc-visitor.toml")
-@login_required
-def download_all_visitor():
-    return _download(tunnels.visitor_toml_all(get_db(), session["username"]), "frpc-visitor.toml")
-
-
 @bp.get("/tunnels/<tunnel_id>/frpc.toml")
 @login_required
 def download_frpc(tunnel_id):
     doc = tunnels.get(get_db(), session["username"], tunnel_id)
     return _download(tunnels.frpc_toml(get_db(), doc), f"frpc-{doc['name']}.toml")
-
-
-@bp.get("/tunnels/<tunnel_id>/frpc-visitor.toml")
-@login_required
-def download_visitor(tunnel_id):
-    doc = tunnels.get(get_db(), session["username"], tunnel_id)
-    if doc.get("mode") == "public":
-        return _fail("tunnel แบบ public ไม่ต้องใช้ visitor")
-    return _download(tunnels.visitor_toml(get_db(), doc), "frpc-visitor.toml")
 
 
 @bp.get("/tunnels/<tunnel_id>/setup")

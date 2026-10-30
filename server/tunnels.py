@@ -5,16 +5,10 @@ Tunnel (frp) แยกรายยูส — มือถือรัน `frpc` 
   • แต่ละยูสมี token ของตัวเอง frps ไม่รู้จัก token เหล่านี้ แต่ถาม plugin
     ของเรา (server/frp_plugin.py) ทุกครั้งที่ frpc login และเปิด proxy
   • frpc ตั้ง `user = "<ยูส>"` ทำให้ frp เติม "<ยูส>." หน้าชื่อ proxy ชื่อจึงซ้ำ
-    ข้ามยูสได้ และ stcp จะยอมให้ visitor ของยูสเดียวกันเท่านั้นเข้าถึง
+    ข้ามยูสได้ ส่วนพอร์ตบน VPS แจกไม่ซ้ำกันทั้งระบบ
 
-2 โหมดของ tunnel:
-  • private (stcp) — ไม่เปิดพอร์ตบน VPS เลย คอมของเจ้าของรัน visitor แล้วได้พอร์ต
-    ที่ 127.0.0.1 ทั้งสองฝั่งวิ่งผ่าน Cloudflare ได้ จึงซ่อน IP ของ VPS ได้จริง
-  • public (tcp) — เปิด HOST:remotePort ออกเน็ต ใครก็ยิงมาที่พอร์ตนี้ได้ และเปิดเผย
-    IP ของ VPS ใช้ได้ต่อเมื่อเปิด TUNNEL_PUBLIC_ENABLED
-
-⚠️ Cloudflare ส่งได้แค่ HTTP/WebSocket — frpc จึงต้องใช้ transport wss ส่วนพอร์ต
-   ของโหมด public เป็น raw TCP ที่ Cloudflare ส่งให้ไม่ได้ ต้องเป็น DNS-only เท่านั้น
+⚠️ Cloudflare ส่งได้แค่ HTTP/WebSocket — frpc ต่อ frps ผ่าน wss ได้ แต่พอร์ต ADB
+   เป็น raw TCP ที่ Cloudflare ส่งให้ไม่ได้ TUNNEL_PUBLIC_HOST จึงต้องเป็น DNS-only
 """
 from __future__ import annotations
 
@@ -38,7 +32,6 @@ from server.config import (
     TUNNEL_MAX_PER_USER,
     TUNNEL_PORT_MAX,
     TUNNEL_PORT_MIN,
-    TUNNEL_PUBLIC_ENABLED,
     TUNNEL_PUBLIC_HOST,
     TUNNEL_RELOAD_TRIGGER,
     TUNNEL_SERVER_HOST,
@@ -52,9 +45,6 @@ from server.logger import log
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 # ⚠️ ค่านี้ไปอยู่ใน `bash -c '...'` ของสคริปต์มือถือ ห้ามมี quote หรือช่องว่าง
 LOCAL_IP_RE = re.compile(r"^[A-Za-z0-9.:-]{1,64}$")
-MODES = ("private", "public")
-# พอร์ตเริ่มต้นบนคอมของเจ้าของ tunnel (ฝั่ง visitor)
-VISITOR_PORT_BASE = 15555
 
 
 class TunnelError(Exception):
@@ -115,9 +105,8 @@ def render_frps_toml(db) -> str:
         f"bindPort = {TUNNEL_BIND_PORT}",
         f"allowPorts = [{{ start = {TUNNEL_PORT_MIN}, end = {TUNNEL_PORT_MAX} }}]",
     ]
-    # ⚠️ proxyBindAddr ค่าเริ่มต้นเท่ากับ bindAddr — ไม่ตั้ง พอร์ต public จะรับแค่ในเครื่อง
-    if TUNNEL_PUBLIC_ENABLED:
-        lines.append('proxyBindAddr = "0.0.0.0"')
+    # ⚠️ proxyBindAddr ค่าเริ่มต้นเท่ากับ bindAddr — ไม่ตั้ง พอร์ต ADB จะรับแค่ในเครื่อง
+    lines.append('proxyBindAddr = "0.0.0.0"')
     if TUNNEL_DASHBOARD_PASSWORD:
         dash_host, dash_port = _dashboard_bind()
         lines += [
@@ -191,20 +180,21 @@ def _alloc_remote_port(db) -> int:
     raise TunnelError(f"พอร์ตเต็มช่วง {TUNNEL_PORT_MIN}-{TUNNEL_PORT_MAX} แล้ว")
 
 
-def _alloc_visitor_port(db, owner: str) -> int:
-    used = {
-        d.get("visitor_port")
-        for d in db["tunnels"].find({"owner": owner}, {"visitor_port": 1})
-    }
-    port = VISITOR_PORT_BASE
-    while port in used:
-        port += 1
-    return port
+def migrate_private(db) -> int:
+    """แปลง tunnel แบบ private รุ่นเก่าให้มีพอร์ต — มือถือเครื่องนั้นต้องตั้งค่า frpc ใหม่"""
+    moved = 0
+    for doc in db["tunnels"].find({"remote_port": {"$exists": False}}):
+        db["tunnels"].update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"remote_port": _alloc_remote_port(db)},
+             "$unset": {"mode": "", "secret_key": "", "visitor_port": ""}},
+        )
+        moved += 1
+    return moved
 
 
 def create(db, owner: str, payload: dict) -> str:
     name = str(payload.get("name") or "").strip()
-    mode = str(payload.get("mode") or "private")
     local_ip = str(payload.get("localIp") or "127.0.0.1").strip() or "127.0.0.1"
     try:
         local_port = int(payload.get("localPort") or 5555)
@@ -219,10 +209,6 @@ def create(db, owner: str, payload: dict) -> str:
         raise TunnelError("Local IP ไม่ถูกต้อง")
     if not (1 <= local_port <= 65535):
         raise TunnelError("พอร์ตในเครื่องต้องอยู่ระหว่าง 1-65535")
-    if mode not in MODES:
-        raise TunnelError("โหมดต้องเป็น private หรือ public")
-    if mode == "public" and not TUNNEL_PUBLIC_ENABLED:
-        raise TunnelError("ระบบนี้ปิดโหมด public ไว้ — ใช้โหมด private")
     if db["tunnels"].count_documents({"owner": owner}) >= TUNNEL_MAX_PER_USER:
         raise TunnelError(f"สร้างได้ไม่เกิน {TUNNEL_MAX_PER_USER} tunnel ต่อยูส")
     if db["tunnels"].find_one({"owner": owner, "name": name}):
@@ -231,21 +217,16 @@ def create(db, owner: str, payload: dict) -> str:
     doc = {
         "owner": owner,
         "name": name,
-        "mode": mode,
         "local_ip": local_ip,
         "local_port": local_port,
+        "remote_port": _alloc_remote_port(db),
         "created_at": datetime.now(timezone.utc),
     }
-    if mode == "public":
-        doc["remote_port"] = _alloc_remote_port(db)
-    else:
-        doc["secret_key"] = secrets.token_hex(24)
-        doc["visitor_port"] = _alloc_visitor_port(db, owner)
     try:
         result = db["tunnels"].insert_one(doc)
     except DuplicateKeyError:
         raise TunnelError("ชื่อหรือพอร์ตนี้เพิ่งถูกใช้ไป — ลองอีกครั้ง")
-    log("OK", f"{owner} สร้าง tunnel '{name}' ({mode})")
+    log("OK", f"{owner} สร้าง tunnel '{name}' พอร์ต {doc['remote_port']}")
     return str(result.inserted_id)
 
 
@@ -279,10 +260,8 @@ def proxy_name(doc: dict) -> str:
 
 
 def endpoint_of(doc: dict) -> str:
-    if doc.get("mode") == "public":
-        host = TUNNEL_PUBLIC_HOST or TUNNEL_SERVER_HOST or "YOUR_SERVER"
-        return f"{host}:{doc['remote_port']}"
-    return f"127.0.0.1:{doc['visitor_port']}"
+    host = TUNNEL_PUBLIC_HOST or TUNNEL_SERVER_HOST or "YOUR_SERVER"
+    return f"{host}:{doc['remote_port']}"
 
 
 # ── สถานะ online/offline (จาก frps dashboard) ───────────────
@@ -292,21 +271,18 @@ def _status_map() -> dict[str, str]:
     if not status_available():
         return {}
     import requests
-    result: dict[str, str] = {}
     try:
-        for kind in ("tcp", "stcp"):
-            res = requests.get(
-                f"{TUNNEL_DASHBOARD_URL.rstrip('/')}/api/proxy/{kind}",
-                auth=(TUNNEL_DASHBOARD_USER, TUNNEL_DASHBOARD_PASSWORD),
-                timeout=3,
-            )
-            res.raise_for_status()
-            for p in res.json().get("proxies") or []:
-                result[p.get("name")] = p.get("status") or "offline"
+        res = requests.get(
+            f"{TUNNEL_DASHBOARD_URL.rstrip('/')}/api/proxy/tcp",
+            auth=(TUNNEL_DASHBOARD_USER, TUNNEL_DASHBOARD_PASSWORD),
+            timeout=3,
+        )
+        res.raise_for_status()
+        proxies = res.json().get("proxies") or []
+        return {p.get("name"): (p.get("status") or "offline") for p in proxies}
     except Exception:
         # dashboard ล่ม/อ่านไม่ได้ ไม่ใช่เรื่องคอขาดบาดตาย — ให้ UI โชว์ "ไม่ทราบ"
         return {}
-    return result
 
 
 def status_available() -> bool:
@@ -321,7 +297,6 @@ def serialize(doc: dict, status_map: dict[str, str] | None = None) -> dict:
     return {
         "id":        str(doc["_id"]),
         "name":      doc.get("name", ""),
-        "mode":      doc.get("mode", "private"),
         "localIp":   doc.get("local_ip", "127.0.0.1"),
         "localPort": int(doc.get("local_port", 5555)),
         "endpoint":  endpoint_of(doc),
@@ -354,29 +329,13 @@ def _frpc_header(db, owner: str) -> str:
 
 
 def _proxy_block(doc: dict) -> str:
-    lines = [
+    return "\n".join([
         "[[proxies]]",
         f'name = "{doc["name"]}"',
-        f'type = "{"tcp" if doc.get("mode") == "public" else "stcp"}"',
+        'type = "tcp"',
         f'localIP = "{doc.get("local_ip", "127.0.0.1")}"',
         f"localPort = {int(doc.get('local_port', 5555))}",
-    ]
-    if doc.get("mode") == "public":
-        lines.append(f"remotePort = {int(doc['remote_port'])}")
-    else:
-        lines.append(f'secretKey = "{doc["secret_key"]}"')
-    return "\n".join(lines)
-
-
-def _visitor_block(doc: dict) -> str:
-    return "\n".join([
-        "[[visitors]]",
-        f'name = "visit-{doc["name"]}"',
-        'type = "stcp"',
-        f'serverName = "{doc["name"]}"',
-        f'secretKey = "{doc["secret_key"]}"',
-        'bindAddr = "127.0.0.1"',
-        f"bindPort = {int(doc['visitor_port'])}",
+        f"remotePort = {int(doc['remote_port'])}",
     ])
 
 
@@ -389,18 +348,6 @@ def frpc_toml_all(db, owner: str) -> str:
     rows = db["tunnels"].find({"owner": owner}).sort("created_at", 1)
     blocks = [_proxy_block(d) for d in rows]
     body = ("\n\n".join(blocks) + "\n") if blocks else "# ยังไม่มี tunnel\n"
-    return _frpc_header(db, owner) + "\n\n" + body
-
-
-def visitor_toml(db, doc: dict) -> str:
-    return _frpc_header(db, doc["owner"]) + "\n\n" + _visitor_block(doc) + "\n"
-
-
-def visitor_toml_all(db, owner: str) -> str:
-    """ทุก tunnel แบบ private ของยูสนี้ — คอมเครื่องเดียวเข้าได้ทุกมือถือ"""
-    rows = db["tunnels"].find({"owner": owner, "mode": "private"}).sort("created_at", 1)
-    blocks = [_visitor_block(d) for d in rows]
-    body = ("\n\n".join(blocks) + "\n") if blocks else "# ยังไม่มี tunnel แบบ private\n"
     return _frpc_header(db, owner) + "\n\n" + body
 
 
@@ -448,18 +395,6 @@ def termux_steps(db, doc: dict) -> list[dict]:
     ]
 
 
-def pc_steps(doc: dict) -> dict | None:
-    """ฝั่งคอมของเจ้าของ tunnel — โหมด public ไม่ต้องใช้ visitor"""
-    if doc.get("mode") == "public":
-        return None
-    v = TUNNEL_FRP_VERSION
-    return {
-        "download": f"https://github.com/fatedier/frp/releases/download/v{v}/frp_{v}_windows_amd64.zip",
-        "run": "frpc.exe -c frpc-visitor.toml",
-        "connect": f"adb connect {endpoint_of(doc)}",
-    }
-
-
 def reboot_steps() -> dict:
     """
     ⚠️ ถ้ามือถือไม่ได้ root: ADB over TCP (พอร์ต 5555) จะหายทุกครั้งที่รีบูต
@@ -477,6 +412,6 @@ def setup(db, owner: str, tunnel_id: str) -> dict:
     return {
         "summary":     serialize(doc, _status_map()),
         "termuxSteps": termux_steps(db, doc),
-        "pc":          pc_steps(doc),
+        "connect":     f"adb connect {endpoint_of(doc)}",
         "reboot":      reboot_steps(),
     }

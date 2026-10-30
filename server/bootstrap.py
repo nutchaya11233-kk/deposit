@@ -27,6 +27,10 @@ def prepare() -> bool:
         log("WARN", "ยังไม่มีผู้ใช้สักคน — ตั้ง ADMIN_USERNAME/ADMIN_PASSWORD ใน .env "
                     "หรือสั่ง  py -3 manage.py adduser <ชื่อ> --role admin")
 
+    moved = tunnels.migrate_private(get_db())
+    if moved:
+        log("WARN", f"แปลง tunnel แบบ private {moved} อันเป็นแบบมีพอร์ต — มือถือต้องตั้งค่า frpc ใหม่")
+
     if tunnels.sync_frps_config(get_db()):
         log("OK", "เขียน frps.toml แล้ว")
     return True

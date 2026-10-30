@@ -55,10 +55,8 @@ TUNNEL_BIND_PORT    = _int("TUNNEL_BIND_PORT", 7000)               # frps bindPo
 TUNNEL_MAX_PER_USER = _int("TUNNEL_MAX_PER_USER", 10)
 TUNNEL_FRP_VERSION  = os.getenv("TUNNEL_FRP_VERSION", "0.61.1")
 
-# โหมด public (เปิดพอร์ต ADB ออกเน็ตตรง ๆ) — ปิดไว้เป็นค่าเริ่มต้น เพราะพอร์ตนี้
-# ไม่ผ่าน Cloudflare และเปิดเผย IP ของ VPS
-TUNNEL_PUBLIC_ENABLED = _bool("TUNNEL_PUBLIC_ENABLED")
-TUNNEL_PUBLIC_HOST    = os.getenv("TUNNEL_PUBLIC_HOST", "")        # ต้องเป็น DNS-only (เมฆเทา)
+# host ของพอร์ต ADB ที่แจกให้ยูส — เป็น raw TCP จึงต้องเป็น DNS-only (เมฆเทา)
+TUNNEL_PUBLIC_HOST    = os.getenv("TUNNEL_PUBLIC_HOST", "")
 TUNNEL_PORT_MIN       = _int("TUNNEL_PORT_MIN", 20000)
 TUNNEL_PORT_MAX       = _int("TUNNEL_PORT_MAX", 20099)
 
