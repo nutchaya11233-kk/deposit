@@ -1,0 +1,11 @@
+# restart frps เพื่อตัดการเชื่อมต่อของ tunnel/token ที่ถูกเพิกถอน
+#
+# ทำไมต้องมี: ตัวเว็บรันแบบ NoNewPrivileges (สั่ง systemctl ไม่ได้) จึง "สะกิด" ไฟล์
+# trigger แทน แล้วให้ unit นี้ (root ผ่าน systemd) เป็นคน restart frps
+
+[Unit]
+Description=Restart frps to drop revoked tunnels
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart frps.service

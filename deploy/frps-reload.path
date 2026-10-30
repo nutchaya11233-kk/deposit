@@ -1,0 +1,12 @@
+# เฝ้าดูไฟล์ trigger ที่เว็บสะกิดตอนลบ tunnel/ลบยูส/rotate token แล้วสั่ง frps-reload.service
+# path นี้ต้องตรงกับ TUNNEL_RELOAD_TRIGGER ใน .env
+
+[Unit]
+Description=Watch tunnel reload trigger
+
+[Path]
+PathModified=/opt/tunnel-console/frps/.reload
+Unit=frps-reload.service
+
+[Install]
+WantedBy=multi-user.target

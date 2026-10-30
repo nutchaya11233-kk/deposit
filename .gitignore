@@ -1,0 +1,27 @@
+# ความลับ — ห้ามขึ้น git เด็ดขาด
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# หน้าเว็บ
+node_modules/
+frontend/*.tsbuildinfo
+
+# ผลการทำงาน
+logs/
+*.log
+frps/
+
+# เครื่องมือ
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

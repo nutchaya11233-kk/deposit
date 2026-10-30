@@ -1,0 +1,31 @@
+# systemd unit — วางที่ /etc/systemd/system/tunnel-console.service
+
+[Unit]
+Description=Tunnel Console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=app
+Group=app
+WorkingDirectory=/opt/tunnel-console
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/tunnel-console/.env
+ExecStart=/opt/tunnel-console/.venv/bin/python serve.py
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# frps/ คือที่เว็บเขียน frps.toml + ไฟล์ trigger ให้ frps-reload.path เฝ้าดู
+ReadWritePaths=/opt/tunnel-console/frps
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

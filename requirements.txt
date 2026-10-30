@@ -1,0 +1,13 @@
+# Tunnel Console — ของที่ต้องลง
+flask>=3.0.0             # หน้าเว็บ + API
+pymongo>=4.6.0           # MongoDB
+dnspython>=2.4.0         # จำเป็นสำหรับ mongodb+srv:// (MongoDB Atlas)
+python-dotenv>=1.0.0     # อ่าน .env
+requests>=2.31.0         # อ่านสถานะจาก frps dashboard
+
+# ขึ้น production ให้รันผ่าน waitress แทน Flask dev server
+waitress>=3.0.0
+
+# ยืนยันตัวตน 2 ชั้น (Google Authenticator) + สร้าง QR สำหรับสแกน
+pyotp>=2.9.0
+qrcode[pil]>=7.4.0

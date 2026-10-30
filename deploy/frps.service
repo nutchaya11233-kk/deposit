@@ -1,0 +1,30 @@
+# frps — ตัว server ของ tunnel วางที่ /etc/systemd/system/frps.service
+#
+# ⚠️ frps.toml ถูกเขียนโดยตัวเว็บตอนบูต อย่าแก้ไฟล์นั้นด้วยมือ
+
+[Unit]
+Description=frps (tunnel server)
+After=network-online.target tunnel-console.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=app
+Group=app
+WorkingDirectory=/opt/tunnel-console/frps
+ExecStart=/opt/tunnel-console/frps/frps -c /opt/tunnel-console/frps/frps.toml
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tunnel-console/frps
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=80M
+
+[Install]
+WantedBy=multi-user.target

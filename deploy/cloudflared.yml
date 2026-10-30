@@ -1,0 +1,22 @@
+# Cloudflare Tunnel — วางที่ /etc/cloudflared/config.yml
+# แก้ <TUNNEL_ID> และโดเมนให้เป็นของคุณ (ดู deploy/README.md)
+#
+# cloudflared ต่อ "ออก" ไปหา Cloudflare เอง VPS จึงไม่ต้องเปิดพอร์ตขาเข้าเลย
+
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  # ⚠️ ต้องอยู่ก่อนกฎของหน้าเว็บ — plugin ของ frps ต้องเรียกได้จากในเครื่องเท่านั้น
+  - hostname: panel.example.com
+    path: ^/internal/
+    service: http_status:404
+
+  - hostname: panel.example.com
+    service: http://127.0.0.1:5000
+
+  # frpc ต่อ wss มาที่ path /~!frp แล้วส่งต่อให้ frps
+  - hostname: frp.example.com
+    service: http://127.0.0.1:7000
+
+  - service: http_status:404
