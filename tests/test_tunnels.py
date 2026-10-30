@@ -183,6 +183,15 @@ def test_generated_config(db, monkeypatch):
     assert 'ops = ["Login", "NewProxy"]' in frps
 
 
+def test_public_ports_bind_outside_only_when_enabled(db, monkeypatch):
+    monkeypatch.setattr(tunnels, "TUNNEL_TRANSPORT", "wss")
+    assert "proxyBindAddr" not in tunnels.render_frps_toml(db)
+    monkeypatch.setattr(tunnels, "TUNNEL_PUBLIC_ENABLED", True)
+    frps = tunnels.render_frps_toml(db)
+    assert 'bindAddr = "127.0.0.1"' in frps
+    assert 'proxyBindAddr = "0.0.0.0"' in frps
+
+
 def test_bootstrap_admin_only_when_empty(db):
     assert auth.bootstrap_admin("root", "root-password") is False
     db["users"].delete_many({})

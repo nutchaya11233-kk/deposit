@@ -115,6 +115,9 @@ def render_frps_toml(db) -> str:
         f"bindPort = {TUNNEL_BIND_PORT}",
         f"allowPorts = [{{ start = {TUNNEL_PORT_MIN}, end = {TUNNEL_PORT_MAX} }}]",
     ]
+    # ⚠️ proxyBindAddr ค่าเริ่มต้นเท่ากับ bindAddr — ไม่ตั้ง พอร์ต public จะรับแค่ในเครื่อง
+    if TUNNEL_PUBLIC_ENABLED:
+        lines.append('proxyBindAddr = "0.0.0.0"')
     if TUNNEL_DASHBOARD_PASSWORD:
         dash_host, dash_port = _dashboard_bind()
         lines += [
