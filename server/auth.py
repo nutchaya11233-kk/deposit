@@ -122,7 +122,8 @@ def set_password(username: str, password: str) -> bool:
         raise ValueError("รหัสผ่านต้องยาวอย่างน้อย 10 ตัว")
     res = get_db()["users"].update_one(
         {"username": username},
-        {"$set": {"password": generate_password_hash(password)}},
+        # เปลี่ยนรหัส = ตัด session เก่าทุกเครื่อง เผื่อเปลี่ยนเพราะรหัสหลุด
+        {"$set": {"password": generate_password_hash(password)}, "$inc": {"session_gen": 1}},
     )
     return res.matched_count > 0
 
@@ -135,6 +136,52 @@ def verify(username: str, password: str) -> str | None:
     if not check_password_hash(user.get("password", ""), password):
         return None
     return user.get("role", "staff")
+
+
+# กันเดารหัสผ่าน — นับแยกทั้งต่อชื่อผู้ใช้และต่อ IP (เก็บในหน่วยความจำ เพราะมีโปรเซสเดียว)
+#   ⚠️ ล็อกต่อชื่อผู้ใช้ทำให้คนอื่นแกล้งล็อกชื่อนี้ชั่วคราวได้ แต่กันการไล่เดาจากหลาย IP ได้
+_LOGIN_MAX_FAILS = 10
+_LOGIN_WINDOW_SECONDS = 300
+_LOGIN_MAX_TRACKED = 10000
+_login_fails: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+
+
+def login_keys(username: str, ip: str) -> list[str]:
+    return [f"user:{username.lower()}", f"ip:{ip}"]
+
+
+def _recent_fails(key: str, now: float) -> list[float]:
+    return [t for t in _login_fails.get(key, []) if now - t < _LOGIN_WINDOW_SECONDS]
+
+
+def login_locked(keys: list[str]) -> bool:
+    now = time.time()
+    with _login_lock:
+        return any(len(_recent_fails(k, now)) >= _LOGIN_MAX_FAILS for k in keys)
+
+
+def login_failed(keys: list[str]) -> None:
+    now = time.time()
+    with _login_lock:
+        # กันคนสุ่มชื่อผู้ใช้ไม่ซ้ำจนหน่วยความจำบวม
+        if len(_login_fails) >= _LOGIN_MAX_TRACKED:
+            for key in list(_login_fails):
+                if not _recent_fails(key, now):
+                    del _login_fails[key]
+        for key in keys:
+            _login_fails[key] = _recent_fails(key, now) + [now]
+
+
+def login_succeeded(keys: list[str]) -> None:
+    """ล้างเฉพาะตัวนับของชื่อผู้ใช้ — ไม่ล้างของ IP ไม่งั้นล็อกอินยูสตัวเองสลับได้ไม่จำกัด"""
+    with _login_lock:
+        _login_fails.pop(keys[0], None)
+
+
+def session_gen(username: str) -> int:
+    user = get_db()["users"].find_one({"username": username}, {"session_gen": 1})
+    return int((user or {}).get("session_gen") or 0)
 
 
 # ── ยืนยันตัวตน 2 ชั้น (TOTP — Google Authenticator / Authy / 1Password) ──
@@ -253,6 +300,26 @@ def is_admin() -> bool:
     return session.get("role") == "admin"
 
 
+def session_valid() -> bool:
+    """
+    เช็ค session กับฐานข้อมูลทุกคำขอ
+
+    ⚠️ cookie อยู่ได้ 7 วัน ถ้าเชื่อค่าใน cookie อย่างเดียว ยูสที่ถูกลบ ถูกลดสิทธิ์
+       หรือถูกเปลี่ยนรหัส จะยังใช้สิทธิ์เดิมต่อได้จนกว่า cookie หมดอายุ
+    """
+    username = session.get("username")
+    if not username:
+        return False
+    user = get_db()["users"].find_one({"username": username}, {"role": 1, "session_gen": 1})
+    if not user or int(user.get("session_gen") or 0) != int(session.get("gen") or 0):
+        session.clear()
+        return False
+    role = user.get("role", "staff")
+    if session.get("role") != role:
+        session["role"] = role
+    return True
+
+
 def login_required(fn):
     """
     ⚠️ ตอบ 401 เป็น JSON ไม่ใช่ redirect ไปหน้า login —
@@ -261,7 +328,7 @@ def login_required(fn):
     """
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if not session.get("username"):
+        if not session_valid():
             return jsonify({"error": "ต้องเข้าสู่ระบบก่อน"}), 401
         return fn(*args, **kwargs)
     return wrapper
@@ -270,7 +337,7 @@ def login_required(fn):
 def admin_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if not session.get("username"):
+        if not session_valid():
             return jsonify({"error": "ต้องเข้าสู่ระบบก่อน"}), 401
         if not is_admin():
             return jsonify({"error": "ต้องเป็นผู้ดูแลระบบ"}), 403

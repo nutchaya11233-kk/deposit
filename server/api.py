@@ -47,9 +47,19 @@ def login():
     data = request.get_json(silent=True) or {}
     username = str(data.get("username") or "").strip()
     password = str(data.get("password") or "")
+
+    # เว็บรับเฉพาะจาก 127.0.0.1 หลัง cloudflared จึงเชื่อ header นี้ได้
+    # (remote_addr ของทุกคำขอคือ 127.0.0.1 ใช้แยกคนไม่ได้)
+    ip = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
+    keys = auth.login_keys(username, ip)
+    if auth.login_locked(keys):
+        log("WARN", f"ล็อกการเข้าสู่ระบบชั่วคราว: {username or '(ไม่ระบุ)'} จาก {ip}")
+        return _fail("ลองผิดหลายครั้ง รอ 5 นาทีแล้วลองใหม่", 429)
+
     role = verify(username, password) if username and password else None
     if not role:
-        log("WARN", f"เข้าสู่ระบบไม่สำเร็จ: {username or '(ไม่ระบุ)'}")
+        auth.login_failed(keys)
+        log("WARN", f"เข้าสู่ระบบไม่สำเร็จ: {username or '(ไม่ระบุ)'} จาก {ip}")
         return _fail("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง", 401)
 
     # ขั้นที่ 2 — ถ้าผู้ใช้เปิด 2FA ไว้ ต้องมีรหัสจากแอป Authenticator ด้วย
@@ -66,9 +76,11 @@ def login():
             log("WARN", f"{username} ใส่รหัส 2FA ไม่ถูกต้อง")
             return _fail("รหัสยืนยัน 6 หลักไม่ถูกต้อง", 401)
 
+    auth.login_succeeded(keys)
     session.clear()
     session["username"] = username
     session["role"] = role
+    session["gen"] = auth.session_gen(username)
     session.permanent = True
     log("OK", f"{username} ({role}) เข้าสู่ระบบ{' (2FA)' if two_factor else ''}")
     return jsonify({"username": username, "role": role, "totpEnabled": two_factor})
@@ -82,9 +94,9 @@ def logout():
 
 @bp.get("/auth/me")
 def me():
-    user = current_user()
-    if not user["username"]:
+    if not auth.session_valid():
         return _fail("ยังไม่ได้เข้าสู่ระบบ", 401)
+    user = current_user()
     user["totpEnabled"] = auth.totp_enabled(user["username"])
     return jsonify(user)
 

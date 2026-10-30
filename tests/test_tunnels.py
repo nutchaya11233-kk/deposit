@@ -10,6 +10,7 @@ from server.app import create_app
 def db(monkeypatch):
     fake = mongomock.MongoClient().get_database("test")
     monkeypatch.setattr(db_module, "_db", fake)
+    auth._login_fails.clear()
     db_module.ensure_indexes()
     auth.create_user("admin", "admin-password", "admin")
     auth.create_user("alice", "alice-password", "staff")
@@ -185,6 +186,69 @@ def test_generated_config(db, monkeypatch):
     assert 'proxyBindAddr = "0.0.0.0"' in frps
     assert f'/internal/frp/{tunnels.plugin_secret(db)}' in frps
     assert 'ops = ["Login", "NewProxy"]' in frps
+
+
+def bad_login(c, username, ip):
+    return c.post(
+        "/api/auth/login",
+        json={"username": username, "password": "wrong-password"},
+        headers={"CF-Connecting-IP": ip},
+    ).status_code
+
+
+def test_login_locks_username_even_across_ips(client):
+    c = client()
+    for i in range(auth._LOGIN_MAX_FAILS):
+        assert bad_login(c, "alice", f"10.0.0.{i}") == 401
+    assert bad_login(c, "alice", "10.0.1.1") == 429
+    # ถูกล็อกแล้วรหัสถูกก็เข้าไม่ได้จนกว่าจะหมดเวลา
+    res = c.post("/api/auth/login", json={"username": "alice", "password": "alice-password"})
+    assert res.status_code == 429
+    login(client, "bob.x", "bob-password")
+
+
+def test_login_locks_ip_across_usernames(client):
+    c = client()
+    for i in range(auth._LOGIN_MAX_FAILS):
+        assert bad_login(c, f"nobody{i}", "10.0.0.9") == 401
+    assert bad_login(c, "alice", "10.0.0.9") == 429
+    assert bad_login(c, "alice", "10.0.0.10") == 401
+
+
+def test_login_lock_expires(client, monkeypatch):
+    c = client()
+    for _ in range(auth._LOGIN_MAX_FAILS):
+        bad_login(c, "alice", "10.0.0.9")
+    now = auth.time.time()
+    monkeypatch.setattr(auth.time, "time", lambda: now + auth._LOGIN_WINDOW_SECONDS + 1)
+    login(client, "alice", "alice-password")
+
+
+def test_deleted_user_session_stops_working(client):
+    alice = login(client, "alice", "alice-password")
+    admin = login(client, "admin", "admin-password")
+    assert alice.get("/api/tunnels").status_code == 200
+    admin.delete("/api/users/alice")
+    assert alice.get("/api/tunnels").status_code == 401
+    assert alice.get("/api/auth/me").status_code == 401
+
+
+def test_demoted_admin_loses_rights_immediately(client, db):
+    auth.create_user("admin2", "admin2-password", "admin")
+    other = login(client, "admin2", "admin2-password")
+    admin = login(client, "admin", "admin-password")
+    assert other.get("/api/users").status_code == 200
+    admin.put("/api/users/admin2", json={"role": "staff"})
+    assert other.get("/api/users").status_code == 403
+    assert other.get("/api/auth/me").get_json()["role"] == "staff"
+
+
+def test_password_change_ends_old_sessions(client):
+    alice = login(client, "alice", "alice-password")
+    admin = login(client, "admin", "admin-password")
+    admin.put("/api/users/alice", json={"password": "new-alice-password"})
+    assert alice.get("/api/tunnels").status_code == 401
+    login(client, "alice", "new-alice-password")
 
 
 def test_bootstrap_admin_only_when_empty(db):
